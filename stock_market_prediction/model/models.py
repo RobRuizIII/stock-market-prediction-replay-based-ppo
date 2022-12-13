@@ -36,7 +36,7 @@ def train_PTR_PPO(env_train, model_name, timesteps=50000):
     """PTR PPO model"""
     print(torch.cuda.is_available())
     start = time.time()
-    model = PTR_PPO('MlpPolicy', env_train, ent_coef = 0.005, device="cuda")
+    model = PTR_PPO('MlpPolicy', env_train, learning_rate = 1e-4, ent_coef = 0.005, tree_capacity=64,num_off_policy_iterations=8, epsilon_ptr=0.2)
     model.learn(total_timesteps=timesteps)
     end = time.time()
 
@@ -184,7 +184,7 @@ def run_ensemble_strategy(df, unique_trade_date, rebalance_window, validation_wi
 
 
         print("======PTR PPO Training========")
-        model_ptr_ppo = train_PTR_PPO(env_train, model_name="PTR_PPO_100k_dow_{}".format(i), timesteps=100000)
+        model_ptr_ppo = train_PTR_PPO(env_train, model_name="PTR_PPO_100k_dow_{}".format(i), timesteps=30000)
         print("======PTR PPO Validation from: ", unique_trade_date[i - rebalance_window - validation_window], "to ",
               unique_trade_date[i - rebalance_window])
         DRL_validation(model=model_ptr_ppo, test_data=validation, test_env=env_val, test_obs=obs_val)
