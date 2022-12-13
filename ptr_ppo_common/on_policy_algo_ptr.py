@@ -7,18 +7,17 @@ import numpy as np
 import torch as th
 
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer
+from ptr_ppo_common.ptr_buffer import DictRolloutBuffer, RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
-from stable_baselines3.ptr_ppo.sumtree_memory import SumTreeMemory
 
-SelfOnPolicyAlgorithm = TypeVar("SelfOnPolicyAlgorithm", bound="OnPolicyAlgorithm")
+SelfOnPolicyAlgorithmPTR = TypeVar("SelfOnPolicyAlgorithmPTR", bound="OnPolicyAlgorithmPTR")
 
 
-class OnPolicyAlgorithm(BaseAlgorithm):
+class OnPolicyAlgorithmPTR(BaseAlgorithm):
     """
     The base for On-Policy algorithms (ex: A2C/PPO).
 
@@ -72,8 +71,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
-        ptr_ppo: bool = True,
-        tree_memory: int = 16,
     ):
 
         super().__init__(
@@ -98,7 +95,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.rollout_buffer = None
-        self.sum_tree_memory = SumTreeMemory(tree_memory) if ptr_ppo else None
 
         if _init_setup_model:
             self._setup_model()
@@ -227,14 +223,14 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         raise NotImplementedError
 
     def learn(
-        self: SelfOnPolicyAlgorithm,
+        self: SelfOnPolicyAlgorithmPTR,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 1,
         tb_log_name: str = "OnPolicyAlgorithm",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfOnPolicyAlgorithm:
+    ) -> SelfOnPolicyAlgorithmPTR:
         iteration = 0
 
         total_timesteps, callback = self._setup_learn(

@@ -6,16 +6,18 @@ import torch as th
 from gym import spaces
 from torch.nn import functional as F
 
-from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
+from ptr_ppo_common.on_policy_algo_ptr import OnPolicyAlgorithmPTR
 from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
-from stable_baselines3.ptr_ppo.sumtree_memory import SumTreeMemory
-
-SelfPPO = TypeVar("SelfPPO", bound="PPO")
 
 
-class PPO(OnPolicyAlgorithm):
+from ptr_ppo_common.sumtree_memory import SumTreeMemory
+
+SelfPTR_PPO = TypeVar("SelfPTR_PPO", bound="PTR_PPO")
+
+
+class PTR_PPO(OnPolicyAlgorithmPTR):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
 
@@ -98,7 +100,10 @@ class PPO(OnPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
-        tree_memory: int = 16,
+        tree_capacity: int = 16,
+        max_advantage: bool = True,
+        num_off_policy_iterations: int = 5,
+        epsilon_ptr: float = 0.1,
     ):
 
         super().__init__(
@@ -125,7 +130,6 @@ class PPO(OnPolicyAlgorithm):
                 spaces.MultiDiscrete,
                 spaces.MultiBinary,
             ),
-            tree_memory=tree_memory,
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -159,6 +163,9 @@ class PPO(OnPolicyAlgorithm):
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
         self.target_kl = target_kl
+        self.tree_memory = SumTreeMemory(capacity=tree_capacity, max_advantage=max_advantage)
+        self.num_off_policy_iterations = num_off_policy_iterations
+        self.epsilon_ptr = epsilon_ptr
 
         if _init_setup_model:
             self._setup_model()
@@ -192,6 +199,7 @@ class PPO(OnPolicyAlgorithm):
         pg_losses, value_losses = [], []
         clip_fractions = []
 
+
         continue_training = True
 
         # train for n_epochs epochs
@@ -210,30 +218,14 @@ class PPO(OnPolicyAlgorithm):
 
                 values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
                 values = values.flatten()
+
+                
                 # Normalize advantage
                 advantages = rollout_data.advantages
-                
-                #add(self, episode_starts: np.ndarray, observations: np.ndarray, actions: np.ndarray, rewards: np.ndarray, log_probs: np.ndarray, advantages: np.ndarray):
-
-                # DO ADD FUNCTION HERE (i.e. ptr_ppo) IF REWARDS NOT NEEDED, OTHERWISE DO IT IN ON POLICY ALGO FILE
-                
-
-                # Trajectory preference calculation
-                advantages_copy = advantages.copy()
-                absolute_advantages = np.abs(advantages_copy)
-                
-                
-                # Max method
-                max_advantage_per_env = np.amax(absolute_advantages, axis = 0)
-                trajectory_order = np.argsort(-max_advantage_per_env)
-                prioritized_trajectories = advantages_copy[:, trajectory_order]
-
-                # Need to add to "sumtree memory" (also possibly need to consider new trajectories with already prioritized trajectories and obtain new orders)
-
-
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -294,6 +286,139 @@ class PPO(OnPolicyAlgorithm):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
 
+                
+                # ptr_entropy_losses = []
+                # ptr_pg_losses, ptr_value_losses = [], []
+                # ptr_clip_fractions = []
+                
+
+                self.tree_memory.add(n_envs = self.env.num_envs, n_steps = self.n_steps, log_probs = rollout_data.old_log_prob, advantages = rollout_data.advantages, observations = rollout_data.observations, actions = rollout_data.actions, values = rollout_data.old_values, next_non_terminal = rollout_data.next_non_terminal, returns = rollout_data.returns)
+                
+
+                for ptr_train_iteration in range(self.num_off_policy_iterations):
+                    # sample: batch, idxs, is_weight
+                    batch, idxs, is_weight = self.tree_memory.sample(self.env.num_envs)
+                    
+                    sample_log_probs = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+                    sample_advantages = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+                    sample_observations = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+                    sample_actions = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+                    sample_values = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+                    sample_next_non_terminal = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+                    sample_returns = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+
+                    for i in range(self.env.num_envs):
+                        
+                        # single trajectory
+                        (traj_log_probs, traj_advantages, traj_observations, traj_actions, traj_values, traj_next_non_terminal, traj_returns) = batch[i]
+
+                        # copy to full trtajectories
+                        sample_log_probs[:, i] = np.array(traj_log_probs).copy()
+                        sample_advantages[:, i] = np.array(traj_advantages).copy()
+                        sample_observations[:, i] = np.array(traj_observations).copy()
+                        sample_actions[:, i] = np.array(traj_actions).copy()
+                        sample_values[:, i] = np.array(traj_values).copy()
+                        sample_next_non_terminal[:, i] = np.array(traj_next_non_terminal).copy()
+                        sample_returns[:, i] = np.array(traj_returns).copy()
+                    
+
+                    sample_observations = self.rollout_buffer.swap_and_flatten(sample_observations)
+                    sample_actions = self.rollout_buffer.swap_and_flatten(sample_actions)
+
+                    if isinstance(self.action_space, spaces.Discrete):
+                        # Convert discrete action from float to long
+                        sample_actions = sample_actions.long().flatten()
+
+                    # Re-sample the noise matrix because the log_std has changed
+                    if self.use_sde:
+                        self.policy.reset_noise(self.batch_size)
+                    
+                    
+                    # get probabilities and entropy of current policy given observations and actions from sample trajectories
+                    target_values, target_log_probs, target_entropy = self.policy.evaluate_actions(sample_observations, sample_actions)
+
+                    target_values = target_values.flatten()
+                    
+                    target_log_probs = np.reshape(target_log_probs.clone().cpu().numpy().flatten(), ((self.n_steps, self.env.num_envs)), order='F')
+
+                    imp_sample_ratio = np.exp(target_log_probs - sample_log_probs)
+                    imp_sample_ratio_mult = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+                    imp_sample_ratio_mult[self.n_steps - 1] = imp_sample_ratio[self.n_steps - 1]
+                    
+                    for step in reversed(range(self.n_steps) - 1):
+                        imp_sample_ratio_mult[step] = imp_sample_ratio_mult[self.n_steps + 1] * sample_next_non_terminal[step]
+                    
+                    for step in range(self.n_steps):
+                        step_ratio_mult = imp_sample_ratio_mult[step]
+                        
+                        rhs = (step_ratio_mult - (1 - self.epsilon_ptr)) / step_ratio_mult
+                        rhs = np.where(rhs < 0.0, 0.0, rhs)
+
+                        lhs = np.where(step_ratio_mult > (1 - self.epsilon_ptr), (1 - self.epsilon_ptr), step_ratio_mult)
+
+                        imp_sample_ratio_mult[step] = lhs + rhs
+                    
+                    
+                    # calculate ptr advantages
+                    ptr_advantages = imp_sample_ratio_mult * sample_advantages
+
+                    # update tree here
+                    for i in range(self.env.num_envs):
+                        self.tree_memory.update(idxs[i], ptr_advantages[:, i])
+
+                    imp_sample_ratio = th.from_numpy(self.rollout_buffer.swap_and_flatten(imp_sample_ratio))
+                    imp_sample_ratio_mult = self.rollout_buffer.swap_and_flatten(imp_sample_ratio_mult)
+                    sample_advantages = self.rollout_buffer.swap_and_flatten(sample_advantages)
+                    sample_values = self.rollout_buffer.swap_and_flatten(sample_values)
+                    sample_returns = self.rollout_buffer.swap_and_flatten(sample_returns)
+
+                    
+                    # Normalization does not make sense if mini batchsize == 1, see GH issue #325
+                    if self.normalize_advantage and len(ptr_advantages) > 1:
+                        ptr_advantages = (ptr_advantages - ptr_advantages.mean()) / (ptr_advantages.std() + 1e-8)
+                    
+                    
+
+                    
+                    # policy loss
+                    ptr_policy_loss_1 = ptr_advantages * imp_sample_ratio
+                    ptr_policy_loss_2 = ptr_advantages * th.clamp(imp_sample_ratio, 1 - clip_range, 1 + clip_range)
+                    ptr_policy_loss = -th.min(ptr_policy_loss_1, ptr_policy_loss_2).mean()
+
+                    
+                    # value loss
+                    if self.clip_range_vf is None:
+                        # No clipping
+                        ptr_values_pred = target_values
+                    else:
+                        # Clip the difference between old and new value
+                        # NOTE: this depends on the reward scaling
+                        ptr_values_pred = sample_values + th.clamp(
+                            target_values - sample_values, -clip_range_vf, clip_range_vf
+                        )
+                    # Value loss using the TD(gae_lambda) target
+                    ptr_value_loss = F.mse_loss(sample_returns, ptr_values_pred, reduction = 'none')
+                    ptr_value_loss = (imp_sample_ratio * ptr_value_loss).mean()
+
+                    
+                    # Entropy loss favor exploration
+                    if target_entropy is None:
+                        # Approximate entropy when no analytical form
+                        target_entropy_loss = -th.mean(-log_prob)
+                    else:
+                        target_entropy_loss = -th.mean(target_entropy)
+
+                    ptr_loss = ptr_policy_loss + self.ent_coef * target_entropy_loss + self.vf_coef * ptr_value_loss
+
+                    # Optimization step
+                    self.policy.optimizer.zero_grad()
+                    ptr_loss.backward()
+                    # Clip grad norm
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    self.policy.optimizer.step()
+
+
+            
             if not continue_training:
                 break
 
@@ -317,14 +442,14 @@ class PPO(OnPolicyAlgorithm):
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
     def learn(
-        self: SelfPPO,
+        self: SelfPTR_PPO,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 1,
-        tb_log_name: str = "PPO",
+        tb_log_name: str = "PTR_PPO",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfPPO:
+    ) -> SelfPTR_PPO:
 
         return super().learn(
             total_timesteps=total_timesteps,

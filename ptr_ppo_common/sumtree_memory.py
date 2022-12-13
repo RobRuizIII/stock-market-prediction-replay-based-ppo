@@ -1,6 +1,11 @@
 import random
 import heapq
 import numpy as np
+import torch as th
+
+
+# https://github.com/rlcode/per/blob/master/SumTree.py
+# https://github.com/rlcode/per/blob/master/prioritized_memory.py
 
 
 # SumTree
@@ -98,44 +103,29 @@ class SumTreeMemory:  # stored as ( s, a, r, s_ ) in SumTree
         return (np.abs(error) + self.e) ** self.a
 
 
-    # Need to see how I will calculate advantage and ensure I used everything---> might only need log probs and advantages but need to consider importance sampling
-    def add(self, episode_starts: np.ndarray, observations: np.ndarray, actions: np.ndarray, rewards: np.ndarray, log_probs: np.ndarray, advantages: np.ndarray):
-        
-        # get number of steps per environment and number of environments
-        (n_steps, n_envs) = observations.shape
 
-        # get idx of episode starts
-        idx_episode_starts = (episode_starts > 0.5).nonzero()
-        idx_episode_starts = sorted(zip(idx_episode_starts[0], idx_episode_starts[1]), key = lambda x: (x[1], x[0]))
+    def add(self, n_envs: int, n_steps: int, log_probs: th.Tensor, advantages: th.Tensor, observations: th.Tensor, actions: th.Tensor, values: th.Tensor, next_non_terminal: th.Tensor, returns: th.Tensor) -> None:
 
+        log_probs = np.reshape(log_probs, ((n_steps, n_envs)), order='F')
+        advantages = np.reshape(advantages, ((n_steps, n_envs)), order='F')
+        observations = np.reshape(observations, ((n_steps, n_envs)), order='F')
+        actions = np.reshape(actions, ((n_steps, n_envs)), order='F')
+        values = np.reshape(values, ((n_steps, n_envs)), order='F')
+        next_non_terminal = np.reshape(next_non_terminal, ((n_steps, n_envs)), order='F')
+        returns = np.reshape(returns, ((n_steps, n_envs)), order='F')
 
-        # check if episode_starts 1.0 values are start or end of episode
-        cur_idx = 0
         for n_env in range(n_envs):
-            start = 0
-            end = idx_episode_starts[cur_idx][0] if idx_episode_starts[cur_idx][1] == n_env else n_steps
-            steps = 0
-            while (steps < n_steps):
-                traj_obs = observations[start:end, n_env]
-                traj_act = actions[start:end, n_env]
-                traj_rew = rewards[start:end, n_env]
-                traj_prob = log_probs[start:end, n_env]
-                traj_adv = advantages[start:end, n_env]
-                steps += end - start
-                
-                adv_error = np.amax(np.abs(traj_adv.copy()), axis = 0) if self.max_advantage else np.mean(np.abs(traj_adv.copy()), axis = 0)
-                priority = self._get_priority(adv_error)
+            traj_log_probs = log_probs[:, n_env]
+            traj_advantages = advantages[:, n_env]
+            traj_observations = observations[:, n_env]
+            traj_actions = actions[:, n_env]
+            traj_values = values[:, n_env]
+            traj_next_non_terminal = next_non_terminal[:, n_env]
+            traj_returns = returns[:, n_env]
 
-                # [(observation, actions, reward, log_prob, advantage)...]
-                traj_sample = zip(traj_obs, traj_act, traj_rew, traj_prob, traj_adv)
-
-                self.tree.add(priority, traj_sample)
-
-                if (end != n_steps):
-                    cur_idx += 1
-
-                start = end
-                end = idx_episode_starts[cur_idx][0] if idx_episode_starts[cur_idx][1] == n_env else n_steps
+            traj_priority = np.max(np.abs(traj_advantages)) if self.max_advantage else np.mean(np.abs(traj_advantages))
+            traj_priority = self._get_priority(traj_priority)
+            self.tree.add(traj_priority, (traj_log_probs, traj_advantages, traj_observations, traj_actions, traj_values, traj_next_non_terminal, traj_returns))
 
 
     def sample(self, n):
@@ -163,5 +153,6 @@ class SumTreeMemory:  # stored as ( s, a, r, s_ ) in SumTree
         return batch, idxs, is_weight
 
     def update(self, idx, error):
+        error = np.max(np.abs(error)) if self.max_advantage else np.mean(np.abs(error))
         p = self._get_priority(error)
         self.tree.update(idx, p)
