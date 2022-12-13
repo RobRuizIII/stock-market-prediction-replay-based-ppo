@@ -227,18 +227,19 @@ class OnPolicyAlgorithmPTR(BaseAlgorithm):
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 1,
-        tb_log_name: str = "OnPolicyAlgorithm",
+        tb_log_name: str = "OnPolicyAlgorithmPTR",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ) -> SelfOnPolicyAlgorithmPTR:
         iteration = 0
 
         total_timesteps, callback = self._setup_learn(
-            total_timesteps,
-            callback,
-            reset_num_timesteps,
-            tb_log_name,
-            progress_bar,
+            total_timesteps = total_timesteps,
+            eval_env = None,
+            callback=callback,
+            reset_num_timesteps = reset_num_timesteps,
+            tb_log_name = tb_log_name,
+            progress_bar = progress_bar,
         )
 
         callback.on_training_start(locals(), globals())

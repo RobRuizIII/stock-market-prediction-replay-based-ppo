@@ -8,6 +8,7 @@ from torch.nn import functional as F
 
 from ptr_ppo_common.on_policy_algo_ptr import OnPolicyAlgorithmPTR
 from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
+# from ptr_ppo_common.ptr_type_alias import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 
@@ -206,7 +207,7 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
             # Do a complete pass on the rollout buffer
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
+            for rollout_data in self.rollout_buffer.get():
                 actions = rollout_data.actions
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long
@@ -291,8 +292,8 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
                 # ptr_pg_losses, ptr_value_losses = [], []
                 # ptr_clip_fractions = []
                 
-
-                self.tree_memory.add(n_envs = self.env.num_envs, n_steps = self.n_steps, log_probs = rollout_data.old_log_prob, advantages = rollout_data.advantages, observations = rollout_data.observations, actions = rollout_data.actions, values = rollout_data.old_values, next_non_terminal = rollout_data.next_non_terminal, returns = rollout_data.returns)
+                # num_steps = 
+                self.tree_memory.add(n_envs = self.env.num_envs, n_steps = self.n_steps, log_probs = rollout_data.old_log_prob, advantages = rollout_data.advantages, observations = rollout_data.observations, actions = rollout_data.actions, values = rollout_data.old_values, next_non_terminal = rollout_data.next_non_terminal, returns = rollout_data.returns, obs_shape = self.rollout_buffer.obs_shape, action_dim = self.rollout_buffer.action_dim)
                 
 
                 for ptr_train_iteration in range(self.num_off_policy_iterations):
@@ -301,8 +302,8 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
                     
                     sample_log_probs = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
                     sample_advantages = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
-                    sample_observations = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
-                    sample_actions = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
+                    sample_observations = np.zeros((self.n_steps, self.env.num_envs) + self.rollout_buffer.obs_shape, dtype=np.float32)
+                    sample_actions = np.zeros((self.n_steps, self.env.num_envs, self.rollout_buffer.action_dim), dtype=np.float32)
                     sample_values = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
                     sample_next_non_terminal = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
                     sample_returns = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
@@ -325,6 +326,9 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
                     sample_observations = self.rollout_buffer.swap_and_flatten(sample_observations)
                     sample_actions = self.rollout_buffer.swap_and_flatten(sample_actions)
 
+                    sample_observations = self.rollout_buffer.to_torch(sample_observations)
+                    sample_actions = self.rollout_buffer.to_torch(sample_actions)
+
                     if isinstance(self.action_space, spaces.Discrete):
                         # Convert discrete action from float to long
                         sample_actions = sample_actions.long().flatten()
@@ -335,18 +339,18 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
                     
                     
                     # get probabilities and entropy of current policy given observations and actions from sample trajectories
-                    target_values, target_log_probs, target_entropy = self.policy.evaluate_actions(sample_observations, sample_actions)
+                    target_values, target_log_probs_grad, target_entropy = self.policy.evaluate_actions(sample_observations, sample_actions)
 
                     target_values = target_values.flatten()
                     
-                    target_log_probs = np.reshape(target_log_probs.clone().cpu().numpy().flatten(), ((self.n_steps, self.env.num_envs)), order='F')
+                    target_log_probs = np.reshape(target_log_probs_grad.detach().clone().cpu().numpy().flatten(), ((self.n_steps, self.env.num_envs)), order='F')
 
                     imp_sample_ratio = np.exp(target_log_probs - sample_log_probs)
                     imp_sample_ratio_mult = np.zeros((self.n_steps, self.env.num_envs), dtype=np.float32)
                     imp_sample_ratio_mult[self.n_steps - 1] = imp_sample_ratio[self.n_steps - 1]
                     
-                    for step in reversed(range(self.n_steps) - 1):
-                        imp_sample_ratio_mult[step] = imp_sample_ratio_mult[self.n_steps + 1] * sample_next_non_terminal[step]
+                    for step in reversed(range(self.n_steps - 2)):
+                        imp_sample_ratio_mult[step] = imp_sample_ratio_mult[step + 1] * sample_next_non_terminal[step]
                     
                     for step in range(self.n_steps):
                         step_ratio_mult = imp_sample_ratio_mult[step]
@@ -366,7 +370,7 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
                     for i in range(self.env.num_envs):
                         self.tree_memory.update(idxs[i], ptr_advantages[:, i])
 
-                    imp_sample_ratio = th.from_numpy(self.rollout_buffer.swap_and_flatten(imp_sample_ratio))
+                    imp_sample_ratio = self.rollout_buffer.to_torch(self.rollout_buffer.swap_and_flatten(imp_sample_ratio))
                     imp_sample_ratio_mult = self.rollout_buffer.swap_and_flatten(imp_sample_ratio_mult)
                     sample_advantages = self.rollout_buffer.swap_and_flatten(sample_advantages)
                     sample_values = self.rollout_buffer.swap_and_flatten(sample_values)
@@ -378,7 +382,7 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
                         ptr_advantages = (ptr_advantages - ptr_advantages.mean()) / (ptr_advantages.std() + 1e-8)
                     
                     
-
+                    ptr_advantages = self.rollout_buffer.to_torch(ptr_advantages)
                     
                     # policy loss
                     ptr_policy_loss_1 = ptr_advantages * imp_sample_ratio
@@ -397,6 +401,7 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
                             target_values - sample_values, -clip_range_vf, clip_range_vf
                         )
                     # Value loss using the TD(gae_lambda) target
+                    sample_returns = self.rollout_buffer.to_torch(sample_returns)
                     ptr_value_loss = F.mse_loss(sample_returns, ptr_values_pred, reduction = 'none')
                     ptr_value_loss = (imp_sample_ratio * ptr_value_loss).mean()
 

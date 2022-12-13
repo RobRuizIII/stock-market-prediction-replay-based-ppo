@@ -195,7 +195,6 @@ class RolloutBuffer(BaseBuffer):
         self.reset()
 
     def reset(self) -> None:
-
         self.observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.float32)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -264,10 +263,10 @@ class RolloutBuffer(BaseBuffer):
         :param log_prob: log probability of the action
             following the current policy.
         """
+
         if len(log_prob.shape) == 0:
             # Reshape 0-d tensor to avoid error
             log_prob = log_prob.reshape(-1, 1)
-
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
         if isinstance(self.observation_space, spaces.Discrete):

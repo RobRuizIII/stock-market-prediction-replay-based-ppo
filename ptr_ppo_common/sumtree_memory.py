@@ -12,13 +12,14 @@ import torch as th
 # a binary tree data structure where the parent’s value is the sum of its children
 class SumTree:
     write = 0
-    heap = heapq.heapify([])
 
     def __init__(self, capacity):
         self.capacity = capacity
         self.tree = np.zeros(2 * capacity - 1)
         self.data = np.zeros(capacity, dtype=object)
         self.n_entries = 0
+        self.heap = []
+        heapq.heapify(self.heap)
 
     # update to the root node
     def _propagate(self, idx, change):
@@ -104,21 +105,22 @@ class SumTreeMemory:  # stored as ( s, a, r, s_ ) in SumTree
 
 
 
-    def add(self, n_envs: int, n_steps: int, log_probs: th.Tensor, advantages: th.Tensor, observations: th.Tensor, actions: th.Tensor, values: th.Tensor, next_non_terminal: th.Tensor, returns: th.Tensor) -> None:
+    def add(self, n_envs: int, n_steps: int, log_probs: th.Tensor, advantages: th.Tensor, observations: th.Tensor, actions: th.Tensor, values: th.Tensor, next_non_terminal: th.Tensor, returns: th.Tensor, obs_shape: tuple, action_dim: int) -> None:
+        
 
-        log_probs = np.reshape(log_probs, ((n_steps, n_envs)), order='F')
-        advantages = np.reshape(advantages, ((n_steps, n_envs)), order='F')
-        observations = np.reshape(observations, ((n_steps, n_envs)), order='F')
-        actions = np.reshape(actions, ((n_steps, n_envs)), order='F')
-        values = np.reshape(values, ((n_steps, n_envs)), order='F')
-        next_non_terminal = np.reshape(next_non_terminal, ((n_steps, n_envs)), order='F')
-        returns = np.reshape(returns, ((n_steps, n_envs)), order='F')
+        log_probs = np.reshape(log_probs.clone().cpu().numpy().flatten(), ((n_steps, n_envs)), order='F')
+        advantages = np.reshape(advantages.clone().cpu().numpy().flatten(), ((n_steps, n_envs)), order='F')
+        observations = np.reshape(observations.clone().cpu().numpy().flatten(), ((n_steps, n_envs) + obs_shape), order='F')
+        actions = np.reshape(actions.clone().cpu().numpy().flatten(), ((n_steps, n_envs, action_dim)), order='F')
+        values = np.reshape(values.clone().cpu().numpy().flatten(), ((n_steps, n_envs)), order='F')
+        next_non_terminal = np.reshape(next_non_terminal.clone().cpu().numpy().flatten(), ((n_steps, n_envs)), order='F')
+        returns = np.reshape(returns.clone().cpu().numpy().flatten(), ((n_steps, n_envs)), order='F')
 
         for n_env in range(n_envs):
             traj_log_probs = log_probs[:, n_env]
             traj_advantages = advantages[:, n_env]
-            traj_observations = observations[:, n_env]
-            traj_actions = actions[:, n_env]
+            traj_observations = observations[:, n_env, :]
+            traj_actions = actions[:, n_env, :]
             traj_values = values[:, n_env]
             traj_next_non_terminal = next_non_terminal[:, n_env]
             traj_returns = returns[:, n_env]
