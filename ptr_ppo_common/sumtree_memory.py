@@ -54,6 +54,9 @@ class SumTree:
             lowest_priority = heapq.heappop(self.heap)
             idx, self.write = lowest_priority[1]
             
+            heapq.heappush(self.heap, (p, (idx, self.write)))
+            
+            
             self.data[self.write] = data
             self.update(idx, p)
         

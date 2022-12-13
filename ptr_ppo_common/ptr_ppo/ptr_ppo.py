@@ -401,7 +401,7 @@ class PTR_PPO(OnPolicyAlgorithmPTR):
                             target_values - sample_values, -clip_range_vf, clip_range_vf
                         )
                     # Value loss using the TD(gae_lambda) target
-                    sample_returns = self.rollout_buffer.to_torch(sample_returns)
+                    sample_returns = self.rollout_buffer.to_torch(sample_returns.flatten())
                     ptr_value_loss = F.mse_loss(sample_returns, ptr_values_pred, reduction = 'none')
                     ptr_value_loss = (imp_sample_ratio * ptr_value_loss).mean()
 
